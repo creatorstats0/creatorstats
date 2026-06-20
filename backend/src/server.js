@@ -86,12 +86,16 @@ app.listen(PORT, () => {
   console.log(`CreatorStats backend running on port ${PORT}`);
 });
 
-// Background job: fetch YouTube view counts every 5 minutes.
-// This is what makes the data collection work WITHOUT needing the browser tab open.
-cron.schedule('*/5 * * * *', () => {
-  console.log('[cron] Running 5-minute view snapshot fetch...');
+// Background job: fetch YouTube view counts every 10 seconds.
+// NOTE: At this frequency, one tracked video uses ~8,640 API calls/day,
+// close to the 10,000/day free quota ceiling. Track only one video at a time.
+// This is what makes the data collection work WITHOUT needing the browser tab open,
+// PROVIDED the server itself stays awake (see cron-job.org setup in the guide).
+cron.schedule('*/10 * * * * *', () => {
+  console.log('[cron] Running 10-second view snapshot fetch...');
   fetchAllActiveVideoSnapshots();
 });
 
 // Run once immediately on startup so there's data right away
 fetchAllActiveVideoSnapshots();
+
