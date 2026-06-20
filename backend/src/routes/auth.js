@@ -81,4 +81,47 @@ router.get('/users', requireAuth, requireAdmin, async (req, res) => {
   res.json({ users: result.rows });
 });
 
+// POST /api/auth/change-password - any logged-in user can change their own password
+router.post('/change-password', requireAuth, async (req, res) => {
+  const { current_password, new_password } = req.body;
+  if (!current_password || !new_password) {
+    return res.status(400).json({ error: 'current_password and new_password required' });
+  }
+  if (new_password.length < 6) {
+    return res.status(400).json({ error: 'New password must be at least 6 characters' });
+  }
+
+  try {
+    const result = await query('SELECT password_hash FROM users WHERE id = $1', [req.user.id]);
+    const user = result.rows[0];
+
+    const matches = await bcrypt.compare(current_password, user.password_hash);
+    if (!matches) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    const newHash = await bcrypt.hash(new_password, 10);
+    await query('UPDATE users SET password_hash = $1 WHERE id = $2', [newHash, req.user.id]);
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to change password' });
+  }
+});
+
+// DELETE /api/auth/users/:id - admin only, remove a user account
+router.delete('/users/:id', requireAuth, requireAdmin, async (req, res) => {
+  if (parseInt(req.params.id, 10) === req.user.id) {
+    return res.status(400).json({ error: 'You cannot delete your own account' });
+  }
+  try {
+    await query('DELETE FROM users WHERE id = $1', [req.params.id]);
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to delete user' });
+  }
+});
+
 export default router;
