@@ -85,11 +85,15 @@ router.patch('/:id/rating', requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
-// GET /api/videos/:id/snapshots - all raw snapshots for a video (Raw tab)
+// GET /api/videos/:id/snapshots - most recent raw snapshots for a video (Raw tab), newest first
 router.get('/:id/snapshots', requireAuth, async (req, res) => {
   try {
+    // DESC so newest is first (matches "latest at top" expectation).
+    // Limited to 200 most recent rows - at 10-second fetch intervals this is
+    // a manageable ~33 minutes of history; older data is still in the DB,
+    // just not all dumped into this one screen at once.
     const result = await query(
-      'SELECT views, fetched_at FROM view_snapshots WHERE video_id = $1 ORDER BY fetched_at ASC',
+      'SELECT views, fetched_at FROM view_snapshots WHERE video_id = $1 ORDER BY fetched_at DESC LIMIT 200',
       [req.params.id]
     );
     res.json({ snapshots: result.rows });
@@ -100,3 +104,4 @@ router.get('/:id/snapshots', requireAuth, async (req, res) => {
 });
 
 export default router;
+
