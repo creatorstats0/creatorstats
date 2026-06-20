@@ -35,7 +35,8 @@ router.get('/risk-suggestion', requireAuth, async (req, res) => {
         (SELECT COALESCE(SUM(net_profit), 0) FROM trades WHERE user_id = $1) AS balance`,
       [req.user.id]
     );
-    const balance = parseFloat(balanceResult.rows[0].balance);
+    const rawBalance = balanceResult.rows[0]?.balance;
+    const balance = rawBalance == null ? 0 : parseFloat(rawBalance) || 0;
 
     const tiersResult = await query(
       "SELECT * FROM rules WHERE category = 'risk_tier' ORDER BY sort_order ASC"
