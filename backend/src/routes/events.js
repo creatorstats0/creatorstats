@@ -103,6 +103,8 @@ router.get('/:id/intervals', requireAuth, async (req, res) => {
     const event = eventResult.rows[0];
     if (!event) return res.status(404).json({ error: 'Event not found' });
 
+    // Always fetch in chronological order first so delta math (gained = current - previous) is correct.
+    // We reverse for display only, after all deltas are computed.
     const snapshotsResult = await query(
       'SELECT views, fetched_at FROM view_snapshots WHERE video_id = $1 ORDER BY fetched_at ASC',
       [event.video_id]
@@ -110,34 +112,44 @@ router.get('/:id/intervals', requireAuth, async (req, res) => {
     const snapshots = snapshotsResult.rows;
 
     if (type === '5min') {
-      // Each row IS a 5-min snapshot already (cron runs every 5 min), just compute deltas
+      // Raw fetch points (now every 10 seconds). Compute gained vs previous point,
+      // then reverse so the newest row is shown first, and cap to the most recent 300
+      // so the page doesn't try to render thousands of rows.
       const rows = snapshots.map((s, i) => ({
         time: s.fetched_at,
         views: s.views,
         gained: i === 0 ? 0 : s.views - snapshots[i - 1].views
       }));
-      return res.json({ intervals: rows });
+      const newestFirst = rows.slice().reverse().slice(0, 300);
+      return res.json({ intervals: newestFirst });
     }
 
-    // Hourly: bucket snapshots by hour, take first/last in each bucket
-    const hourBuckets = {};
+    // Hourly: bucket snapshots by hour using a Map (preserves insertion order reliably,
+    // unlike plain objects whose key order isn't guaranteed for all key formats).
+    const hourBuckets = new Map();
     for (const s of snapshots) {
       const hourKey = new Date(s.fetched_at).toISOString().slice(0, 13); // YYYY-MM-DDTHH
-      if (!hourBuckets[hourKey]) hourBuckets[hourKey] = [];
-      hourBuckets[hourKey].push(s);
+      if (!hourBuckets.has(hourKey)) hourBuckets.set(hourKey, []);
+      hourBuckets.get(hourKey).push(s);
     }
-    const hourlyRows = Object.entries(hourBuckets).map(([hourKey, group], i, all) => {
+
+    const orderedHourKeys = Array.from(hourBuckets.keys()).sort(); // chronological, since ISO strings sort correctly
+    const hourlyRows = [];
+    let prevLastViews = null;
+
+    for (const hourKey of orderedHourKeys) {
+      const group = hourBuckets.get(hourKey);
       const lastInHour = group[group.length - 1];
-      const prevGroup = i > 0 ? all[i - 1][1] : null;
-      const prevLast = prevGroup ? prevGroup[prevGroup.length - 1] : null;
-      return {
+      hourlyRows.push({
         hour: hourKey,
         views: lastInHour.views,
-        gained: prevLast ? lastInHour.views - prevLast.views : 0
-      };
-    });
+        gained: prevLastViews !== null ? lastInHour.views - prevLastViews : 0
+      });
+      prevLastViews = lastInHour.views;
+    }
 
-    res.json({ intervals: hourlyRows });
+    // Newest hour first for display
+    res.json({ intervals: hourlyRows.reverse() });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch interval data' });
