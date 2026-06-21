@@ -34,7 +34,7 @@ router.get('/today', requireAuth, async (req, res) => {
 
 // POST /api/videos - admin only, sets today's video (deactivates previous one)
 router.post('/', requireAuth, requireAdmin, async (req, res) => {
-  const { youtube_video_id, title, thumbnail_url } = req.body;
+  const { youtube_video_id, title } = req.body;
   if (!youtube_video_id || !title) {
     return res.status(400).json({ error: 'youtube_video_id and title required' });
   }
@@ -43,12 +43,17 @@ router.post('/', requireAuth, requireAdmin, async (req, res) => {
     // Verify the video actually exists on YouTube before saving
     await fetchViewCount(youtube_video_id);
 
+    // YouTube serves thumbnails at predictable URLs based on video ID - no extra API call needed.
+    // maxresdefault is highest quality; not every video has one, so the frontend falls back
+    // to hqdefault (which always exists) if maxresdefault fails to load.
+    const thumbnailUrl = `https://i.ytimg.com/vi/${youtube_video_id}/maxresdefault.jpg`;
+
     await query('UPDATE videos SET is_active = FALSE WHERE is_active = TRUE');
 
     const result = await query(
       `INSERT INTO videos (youtube_video_id, title, thumbnail_url, created_by)
        VALUES ($1, $2, $3, $4) RETURNING *`,
-      [youtube_video_id, title, thumbnail_url || null, req.user.id]
+      [youtube_video_id, title, thumbnailUrl, req.user.id]
     );
 
     // Take an immediate first snapshot so the dashboard isn't empty
@@ -104,4 +109,3 @@ router.get('/:id/snapshots', requireAuth, async (req, res) => {
 });
 
 export default router;
-
