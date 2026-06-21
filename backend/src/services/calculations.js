@@ -15,9 +15,11 @@ export function calculateRequiredPerInterval(currentViews, targetViews, deadline
   const viewsNeeded = Math.max(targetViews - currentViews, 0);
   const msLeft = new Date(deadline).getTime() - now.getTime();
   const minutesLeft = Math.max(msLeft / 1000 / 60, 0);
-  const intervalsLeft = Math.max(Math.ceil(minutesLeft / 5), 1); // at least 1 to avoid divide by zero
+  const intervalsLeft = Math.ceil(minutesLeft / 5); // 0 when event has expired, no artificial floor
 
-  const requiredPerInterval = viewsNeeded / intervalsLeft;
+  // Avoid divide-by-zero only for the requiredPerInterval calculation itself;
+  // the intervalsLeft value shown to the user stays honest at 0 when expired.
+  const requiredPerInterval = intervalsLeft > 0 ? viewsNeeded / intervalsLeft : viewsNeeded;
 
   return {
     viewsNeeded,
