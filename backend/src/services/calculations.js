@@ -127,3 +127,4 @@ export function calculateTradeTotals(entryPnls) {
 // Withdrawal commission: flat 3% taken on every withdrawal amount.
 export function calculateWithdrawalCommission(amount) {
   return Math.round(amount * 0.03 * 100) / 100;
+}
