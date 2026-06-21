@@ -1,5 +1,14 @@
 // All calculation logic lives here so it's tested once and reused everywhere.
 
+// Returns the current hour (0-23) in India Standard Time (UTC+5:30), regardless
+// of what timezone the server itself is running in. Used for all time-slot bias logic.
+function getIstHour(now = new Date()) {
+  const istString = now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata', hour: 'numeric', hour12: false });
+  // toLocaleString can return "24" for midnight in some environments - normalize to 0
+  const parsed = parseInt(istString, 10);
+  return parsed === 24 ? 0 : parsed;
+}
+
 // Given current views, target views, and deadline, calculates how many
 // 5-minute intervals remain and how many views are needed per interval.
 export function calculateRequiredPerInterval(currentViews, targetViews, deadline, now = new Date()) {
@@ -34,10 +43,13 @@ export function calculateActualFiveMinAvg(snapshots, intervalCount = 6) {
   return Math.round(avg);
 }
 
-// Returns the current time-slot bias based on hour of day.
-// Matches the rules seeded in the database (time_slot rows).
+// Returns the current time-slot bias based on hour of day, in India Standard Time (IST).
+// IMPORTANT: the server (Render) runs in UTC regardless of where you are, so using
+// `now.getHours()` directly would read the WRONG hour (e.g. 8AM IST looks like 2:30AM
+// to a UTC server, which fell into the wrong bucket below). We explicitly convert to
+// IST (UTC+5:30) here so the bias is always correct for your actual local time.
 export function getCurrentTimeBias(now = new Date()) {
-  const hour = now.getHours();
+  const hour = getIstHour(now);
 
   if (hour >= 10 && hour < 12) {
     return { bias: 'cautious', label: 'Cautious zone', riskMultiplier: 0.5 };
@@ -45,7 +57,11 @@ export function getCurrentTimeBias(now = new Date()) {
   if (hour >= 12 && hour < 16) {
     return { bias: 'yes', label: 'YES advantage', riskMultiplier: 1 };
   }
-  return { bias: 'no', label: 'NO advantage', riskMultiplier: 1 };
+  if (hour >= 16 && hour < 24) {
+    return { bias: 'no', label: 'NO advantage', riskMultiplier: 1 };
+  }
+  // Before 10AM - outside all defined rule windows, no bias applies
+  return { bias: 'neutral', label: 'No data (before 10AM)', riskMultiplier: 1 };
 }
 
 // Applies the +10% weightage to whichever side has the time-slot advantage.
@@ -111,4 +127,3 @@ export function calculateTradeTotals(entryPnls) {
 // Withdrawal commission: flat 3% taken on every withdrawal amount.
 export function calculateWithdrawalCommission(amount) {
   return Math.round(amount * 0.03 * 100) / 100;
-}
