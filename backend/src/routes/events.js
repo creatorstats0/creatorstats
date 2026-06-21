@@ -94,7 +94,7 @@ router.get('/:id', requireAuth, async (req, res) => {
   }
 });
 
-// GET /api/events/:id/intervals?type=5min|hourly - data table for sub-tabs
+// GET /api/events/:id/intervals?type=5min|hourly - bucketed data tables for sub-tabs
 router.get('/:id/intervals', requireAuth, async (req, res) => {
   const type = req.query.type === 'hourly' ? 'hourly' : '5min';
 
@@ -104,57 +104,58 @@ router.get('/:id/intervals', requireAuth, async (req, res) => {
     if (!event) return res.status(404).json({ error: 'Event not found' });
 
     // Always fetch in chronological order first so delta math (gained = current - previous) is correct.
-    // We reverse for display only, after all deltas are computed.
     const snapshotsResult = await query(
       'SELECT views, fetched_at FROM view_snapshots WHERE video_id = $1 ORDER BY fetched_at ASC',
       [event.video_id]
     );
     const snapshots = snapshotsResult.rows;
 
-    if (type === '5min') {
-      // Raw fetch points (now every 10 seconds). Compute gained vs previous point,
-      // then reverse so the newest row is shown first, and cap to the most recent 300
-      // so the page doesn't try to render thousands of rows.
-      const rows = snapshots.map((s, i) => ({
-        time: s.fetched_at,
-        views: s.views,
-        gained: i === 0 ? 0 : s.views - snapshots[i - 1].views
-      }));
-      const newestFirst = rows.slice().reverse().slice(0, 300);
-      return res.json({ intervals: newestFirst });
-    }
+    const bucketMinutes = type === 'hourly' ? 60 : 5;
+    const buckets = bucketByMinutes(snapshots, bucketMinutes);
 
-    // Hourly: bucket snapshots by hour using a Map (preserves insertion order reliably,
-    // unlike plain objects whose key order isn't guaranteed for all key formats).
-    const hourBuckets = new Map();
-    for (const s of snapshots) {
-      const hourKey = new Date(s.fetched_at).toISOString().slice(0, 13); // YYYY-MM-DDTHH
-      if (!hourBuckets.has(hourKey)) hourBuckets.set(hourKey, []);
-      hourBuckets.get(hourKey).push(s);
-    }
-
-    const orderedHourKeys = Array.from(hourBuckets.keys()).sort(); // chronological, since ISO strings sort correctly
-    const hourlyRows = [];
-    let prevLastViews = null;
-
-    for (const hourKey of orderedHourKeys) {
-      const group = hourBuckets.get(hourKey);
-      const lastInHour = group[group.length - 1];
-      hourlyRows.push({
-        hour: hourKey,
-        views: lastInHour.views,
-        gained: prevLastViews !== null ? lastInHour.views - prevLastViews : 0
-      });
-      prevLastViews = lastInHour.views;
-    }
-
-    // Newest hour first for display
-    res.json({ intervals: hourlyRows.reverse() });
+    res.json({ intervals: buckets.reverse() }); // newest first for display
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch interval data' });
   }
 });
+
+// Groups snapshots into fixed-size time buckets (e.g. 5-min or 60-min windows).
+// Each bucket reports the LAST views value seen in that window, and how much
+// was gained since the previous bucket's last value. Returns full ISO timestamps
+// (not truncated strings) so the frontend's `new Date(...)` always parses correctly -
+// this is what fixes the "Invalid Date" bug in the Hourly tab.
+function bucketByMinutes(snapshots, bucketMinutes) {
+  if (snapshots.length === 0) return [];
+
+  const bucketMs = bucketMinutes * 60 * 1000;
+  const buckets = new Map(); // bucketStartMs -> array of snapshots
+
+  for (const s of snapshots) {
+    const t = new Date(s.fetched_at).getTime();
+    const bucketStart = Math.floor(t / bucketMs) * bucketMs;
+    if (!buckets.has(bucketStart)) buckets.set(bucketStart, []);
+    buckets.get(bucketStart).push(s);
+  }
+
+  const orderedStarts = Array.from(buckets.keys()).sort((a, b) => a - b);
+  const rows = [];
+  let prevViews = null;
+
+  for (const bucketStart of orderedStarts) {
+    const group = buckets.get(bucketStart);
+    const lastInBucket = group[group.length - 1];
+    rows.push({
+      bucket_start: new Date(bucketStart).toISOString(),
+      bucket_end: new Date(bucketStart + bucketMs).toISOString(),
+      views: lastInBucket.views,
+      gained: prevViews !== null ? lastInBucket.views - prevViews : 0
+    });
+    prevViews = lastInBucket.views;
+  }
+
+  return rows;
+}
 
 // POST /api/events - admin only, add a new event
 router.post('/', requireAuth, requireAdmin, async (req, res) => {
