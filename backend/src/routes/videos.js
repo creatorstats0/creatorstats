@@ -90,15 +90,26 @@ router.patch('/:id/rating', requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
-// GET /api/videos/:id/snapshots - most recent raw snapshots for a video (Raw tab), newest first
+// GET /api/videos/:id/snapshots - most recent raw snapshots for a video (Raw tab), newest first.
+// Only returns rows where the view count actually CHANGED from the previous fetch -
+// YouTube's public counter often doesn't tick every 10 seconds, so without this filter
+// the Raw tab would be full of repeated "+0" rows that add noise without information.
 router.get('/:id/snapshots', requireAuth, async (req, res) => {
   try {
-    // DESC so newest is first (matches "latest at top" expectation).
-    // Limited to 200 most recent rows - at 10-second fetch intervals this is
-    // a manageable ~33 minutes of history; older data is still in the DB,
-    // just not all dumped into this one screen at once.
     const result = await query(
-      'SELECT views, fetched_at FROM view_snapshots WHERE video_id = $1 ORDER BY fetched_at DESC LIMIT 200',
+      `WITH labeled AS (
+         SELECT
+           views,
+           fetched_at,
+           LAG(views) OVER (ORDER BY fetched_at ASC) AS prev_views
+         FROM view_snapshots
+         WHERE video_id = $1
+       )
+       SELECT views, fetched_at, prev_views
+       FROM labeled
+       WHERE prev_views IS NULL OR views != prev_views
+       ORDER BY fetched_at DESC
+       LIMIT 200`,
       [req.params.id]
     );
     res.json({ snapshots: result.rows });
