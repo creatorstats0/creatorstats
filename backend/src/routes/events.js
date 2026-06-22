@@ -3,7 +3,6 @@ import { query } from '../db/pool.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import {
   calculateRequiredPerInterval,
-  calculateActualFiveMinAvg,
   getCurrentTimeBias,
   getWeightedSide
 } from '../services/calculations.js';
@@ -71,7 +70,15 @@ router.get('/:id', requireAuth, async (req, res) => {
     const { viewsNeeded, minutesLeft, intervalsLeft, requiredPerInterval } =
       calculateRequiredPerInterval(currentViews, event.target_views, event.deadline);
 
-    const actualFiveMinAvg = calculateActualFiveMinAvg(snapshots);
+    // Build real 5-minute buckets (same logic as the 5-min tab) instead of just
+    // averaging raw 10-second deltas - those aren't the same thing at all, since
+    // the cron now runs every 10 seconds, not every 5 minutes.
+    const fiveMinBuckets = bucketByMinutes(snapshots, 5);
+    const last6Buckets = fiveMinBuckets.slice(-6);
+    const actualFiveMinAvg = last6Buckets.length > 0
+      ? Math.round(last6Buckets.reduce((sum, b) => sum + b.gained, 0) / last6Buckets.length)
+      : 0;
+
     const difference = actualFiveMinAvg - requiredPerInterval;
 
     res.json({
@@ -120,22 +127,29 @@ router.get('/:id/intervals', requireAuth, async (req, res) => {
   }
 });
 
-// Groups snapshots into fixed-size time buckets (e.g. 5-min or 60-min windows).
+// IST is UTC+5:30 - a fixed, fairly rare half-hour offset (no DST in India).
+const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
+
+// Groups snapshots into fixed-size time buckets aligned to IST wall-clock boundaries
+// (e.g. hourly buckets are 9:00-10:00 AM IST, not arbitrary UTC-epoch-aligned slots).
+// Without this IST shift, Math.floor(timestamp / bucketMs) aligns to UTC midnight,
+// which is offset by exactly 5h30m from IST midnight - causing hour buckets to
+// visibly straddle the wrong wall-clock hours (e.g. showing "8-9 AM" at 9:25 AM IST).
 // Each bucket reports the LAST views value seen in that window, and how much
-// was gained since the previous bucket's last value. Returns full ISO timestamps
-// (not truncated strings) so the frontend's `new Date(...)` always parses correctly -
-// this is what fixes the "Invalid Date" bug in the Hourly tab.
+// was gained since the previous bucket's last value.
 function bucketByMinutes(snapshots, bucketMinutes) {
   if (snapshots.length === 0) return [];
 
   const bucketMs = bucketMinutes * 60 * 1000;
-  const buckets = new Map(); // bucketStartMs -> array of snapshots
+  const buckets = new Map(); // istAlignedBucketStartMs -> array of snapshots
 
   for (const s of snapshots) {
-    const t = new Date(s.fetched_at).getTime();
-    const bucketStart = Math.floor(t / bucketMs) * bucketMs;
-    if (!buckets.has(bucketStart)) buckets.set(bucketStart, []);
-    buckets.get(bucketStart).push(s);
+    const utcMs = new Date(s.fetched_at).getTime();
+    const istShiftedMs = utcMs + IST_OFFSET_MS;
+    const bucketStartIstShifted = Math.floor(istShiftedMs / bucketMs) * bucketMs;
+    const bucketStartUtc = bucketStartIstShifted - IST_OFFSET_MS; // shift back for storage/display
+    if (!buckets.has(bucketStartUtc)) buckets.set(bucketStartUtc, []);
+    buckets.get(bucketStartUtc).push(s);
   }
 
   const orderedStarts = Array.from(buckets.keys()).sort((a, b) => a - b);
@@ -196,3 +210,4 @@ router.delete('/:id', requireAuth, requireAdmin, async (req, res) => {
 });
 
 export default router;
+
